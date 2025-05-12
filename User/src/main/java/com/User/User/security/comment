@@ -1,0 +1,80 @@
+package com.User.User.security;
+
+// Import required classes and packages
+import com.User.User.SpringApplicationContext;
+import com.User.User.model.LoginRequestModel;
+import com.User.User.model.UserDto;
+import com.User.User.service.UserService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.SneakyThrows;
+import org.springframework.core.env.Environment;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import javax.crypto.SecretKey;
+import java.io.IOException;
+import java.security.Key;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Date;
+
+// Custom authentication filter extending Spring Security's UsernamePasswordAuthenticationFilter
+public class MyAuthenticationFilter extends UsernamePasswordAuthenticationFilter {
+
+    // Constructor to initialize with authentication manager
+    public MyAuthenticationFilter(AuthenticationManager authenticationManager) {
+        super(authenticationManager); // Set the authentication manager
+    }
+
+    // Attempt authentication when login request is received
+    @SneakyThrows // Handle checked exceptions like IOException silently
+    @Override
+    public Authentication attemptAuthentication(HttpServletRequest req, HttpServletResponse res) {
+        // Read login credentials (email and password) from the request body
+        LoginRequestModel creds = new ObjectMapper().readValue(req.getInputStream(), LoginRequestModel.class);
+
+        // Return an authentication token with email and password (authorities list is empty here)
+        return getAuthenticationManager()
+                .authenticate(new UsernamePasswordAuthenticationToken(creds.getEmail(), creds.getPassword(), new ArrayList<>()));
+    }
+
+    // On successful authentication, generate and return a JWT token
+    @Override
+    protected void successfulAuthentication(HttpServletRequest req, HttpServletResponse res, FilterChain chain, Authentication authResult) throws IOException, ServletException {
+        // Get the authenticated user's email (used as username in Spring Security)
+        String userEmail = ((User)authResult.getPrincipal()).getUsername();
+
+        // Get the user details (UserDto) from the service layer using email
+        UserDto userDto = ((UserService)SpringApplicationContext.getBean("userServiceImpl"))
+                .getUserDetailsBYEmail(userEmail);
+
+        // Get the secret key for signing the JWT
+        String commonKey = SecurityConstants.getSecretToken();
+
+        // Create the signing key using the secret
+        SecretKey secretKey = Keys.hmacShaKeyFor(commonKey.getBytes());
+
+        // Build the JWT token with user ID, expiry time, issue time, and sign it with the key
+        String token = Jwts.builder()
+                .subject(userDto.getUserId()) // Set subject as user ID
+                .expiration(Date.from(Instant.now().plusMillis(Long.parseLong(SecurityConstants.getTokenExpirationTime())))) // Set expiry
+                .issuedAt(Date.from(Instant.now())) // Set issue time
+                .signWith(secretKey) // Sign the token
+                .compact(); // Compact into a JWT string
+
+        // Add the JWT token to the response header (used by frontend for future requests)
+        res.addHeader(SecurityConstants.HEADER_STRING, SecurityConstants.TOKEN_PREFIX + token);
+
+        // Also return the user ID in a separate header (optional, used by frontend if needed)
+        res.addHeader(SecurityConstants.USER_ID, userDto.getUserId());
+    }
+}
